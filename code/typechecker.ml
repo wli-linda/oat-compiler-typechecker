@@ -47,12 +47,43 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
       (Don't forget about OCaml's 'and' keyword.)
 *)
 let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
-  failwith "todo: subtype"
+  match t1 with
+  | TBool -> begin match t2 with
+      | TBool -> true
+      | _ -> failwith "idk"
+    end
+  | TInt -> begin match t2 with
+      | TInt -> true
+      | _ -> failwith "idk"
+    end
+  | TRef rty1 -> begin
+      match t2 with
+      | TBool | TInt -> failwith "idk"
+      | TRef rty2 | TNullRef rty2 -> subtype_ref c rty1 rty2
+    end
+  | TNullRef rty1 -> begin
+      match t2 with
+      | TBool | TInt -> failwith "idk"
+      | TRef rty2 -> false
+      | TNullRef rty2 -> subtype_ref c rty1 rty2
+    end
 
 (* Decides whether H |-r ref1 <: ref2 *)
 and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
-  failwith "todo: subtype_ref"
+  match t1 with
+  | RString -> begin match t2 with
+      | RString -> true
+      | _ -> failwith "idk"
+    end
+  | RStruct id1 -> failwith "idk"
+  | RArray t1' -> failwith "idk"
+  | RFun (ls1, ret_ty1) -> begin match t2 with
+      | RFun (ls2, ret_ty2) -> subtype_fun c ret_ty1 ret_ty2
+      | _ -> failwith "idk"
+    end
 
+and subtype_fun (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
+  failwith "todo: subtype_fun"
 
 (* well-formed types -------------------------------------------------------- *)
 (* Implement a (set of) functions that check that types are well formed according
