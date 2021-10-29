@@ -48,22 +48,17 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
 *)
 let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
   match t1 with
-  | TBool -> begin match t2 with
-      | TBool -> true
-      | _ -> failwith "idk"
-    end
-  | TInt -> begin match t2 with
-      | TInt -> true
-      | _ -> failwith "idk"
-    end
+  | TBool -> t2 = TBool
+  | TInt -> t2 = TInt
   | TRef rty1 -> begin
       match t2 with
-      | TBool | TInt -> failwith "idk"
+      | TBool | TInt -> failwith "subtype: only t1 is a ref type" (* actually all of these should
+                                                                   * just be false right lol *)
       | TRef rty2 | TNullRef rty2 -> subtype_ref c rty1 rty2
     end
   | TNullRef rty1 -> begin
       match t2 with
-      | TBool | TInt -> failwith "idk"
+      | TBool | TInt -> failwith "subtype: only t1 is a ref? type"
       | TRef rty2 -> false
       | TNullRef rty2 -> subtype_ref c rty1 rty2
     end
@@ -71,19 +66,46 @@ let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
 (* Decides whether H |-r ref1 <: ref2 *)
 and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   match t1 with
-  | RString -> begin match t2 with
-      | RString -> true
-      | _ -> failwith "idk"
+  | RString -> t2 = RString
+  | RArray t1' -> begin match t2 with
+      | RArray t2' -> t1' = t2' (* is this needed? *)
+      | _ -> failwith "subtype: only rty1 is an array type"
     end
-  | RStruct id1 -> failwith "idk"
-  | RArray t1' -> failwith "idk"
-  | RFun (ls1, ret_ty1) -> begin match t2 with
-      | RFun (ls2, ret_ty2) -> subtype_fun c ret_ty1 ret_ty2
-      | _ -> failwith "idk"
+  | RStruct id1 -> begin match t2 with
+      (* not 100% sure of this *)
+      | RStruct id2 -> lookup_option id1 c != None && lookup_option id2 c != None
+      | _ -> failwith "subtype: only rty1 is a struct"
+    end
+  | RFun (ls1, ret_ty1) ->
+    let rec subtype_args_ls ls1 ls2 =
+      match ls1, ls2 with
+      | [], [] -> true
+      | t1' :: tl1, t2' :: tl2 ->
+        subtype c t2' t1' && subtype_args_ls tl1 tl2
+      | _ -> failwith "subtype: two funs w/different # of args"
+    in
+    begin match t2 with
+      | RFun (ls2, ret_ty2) ->
+        subtype_rt c ret_ty1 ret_ty2 && subtype_args_ls ls1 ls2
+      (* &&
+         begin match ls1 with
+          | [] -> ls2 = []
+          | ht1 :: tl1 -> begin match ls2 with 
+          * no... need to use helper rec function subtype_fun probs
+              | [] -> false
+              | ht2 :: tl2 -> 
+            end
+         end *)
+      | _ -> failwith "subtype: only rty1 is function type"
     end
 
-and subtype_fun (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
-  failwith "todo: subtype_fun"
+and subtype_rt (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
+  match t1 with
+  | RetVoid -> t2 = RetVoid
+  | RetVal t1' -> begin match t2 with
+      | RetVal t2' -> subtype c t1' t2'
+      | _ -> failwith "subtype: rt2 is void"
+    end
 
 (* well-formed types -------------------------------------------------------- *)
 (* Implement a (set of) functions that check that types are well formed according
@@ -101,7 +123,34 @@ and subtype_fun (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
     - tc contains the structure definition context
  *)
 let rec typecheck_ty (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ty) : unit =
-  failwith "todo: implement typecheck_ty"
+  match t with
+  | TInt | TBool -> ()
+  | TRef rty | TNullRef rty -> typecheck_ref l tc rty
+
+and typecheck_ref (l : 'a Ast.node) (tc : Tctxt.t) (rty : Ast.rty) : unit = 
+  match rty with
+  | RString -> ()
+  | RArray t -> typecheck_ty l tc t
+  | RStruct id -> begin
+      if lookup_option id tc != None
+      then ()
+      else type_error l "typecheck_ref: not in ctxt?"
+    end
+  | RFun (ls, rt) ->
+    let rec typecheck_args_ls args = 
+      match ls with
+      | [] -> ()
+      | t' :: tl ->
+        typecheck_ty l tc t';
+        typecheck_args_ls tl
+    in
+    typecheck_args_ls ls;
+    typecheck_rt l tc rt
+
+and typecheck_rt (l : 'a Ast.node) (tc : Tctxt.t) (rt : Ast.ret_ty) : unit =
+  match rt with
+  | RetVoid -> ()
+  | RetVal t -> typecheck_ty l tc t
 
 
 (* A helper function to determine whether a type allows the null value *)
