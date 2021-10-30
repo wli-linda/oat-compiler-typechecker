@@ -180,14 +180,73 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | CNull rty -> TRef rty
   | CBool b -> TBool
   | CInt i -> TInt
-  (*| CStr s -> TString*)
+  | CStr s -> TRef RString (* maybe? *)
+                
   | Id id -> begin match lookup_option id c with
       | Some x -> x
       | None -> type_error e ("typecheck_exp: id " ^ id ^ " not in ctxt")
     end
     
-  | _ ->
-    failwith "todo: implement typecheck_exp"
+  | CArr (ty, ls) ->
+    typecheck_ty e c ty;
+    List.iter (fun e' -> let t' = typecheck_exp c e' in
+                if not @@ subtype c t' ty
+                then type_error e' "typecheck_exp: CArr elem not subtype of ty") ls;
+    ty
+    
+  | NewArr (ty, e') ->
+    typecheck_ty e c ty;
+    begin match ty with
+      | TInt | TBool | TNullRef _ -> 
+        if typecheck_exp c e' = TInt
+        then ty
+        else type_error e' "typecheck_exp: NewArr expression not of int type"
+      | _ -> type_error e' "typecheck_exp: NewArr type not int/bool/r?"
+    end
+
+  | NewArrInit (ty, e1, id, e2) ->
+    typecheck_ty e c ty;
+    (* unsure *)
+    if typecheck_exp c e = TInt &&
+       lookup_local_option id c = None &&
+       (let t' = typecheck_exp c e2 in
+        subtype c t' ty)
+    then ty
+    else type_error e "typecheck_exp: NewArrInit"
+      
+  | Index (e', i) ->
+    if typecheck_exp c i = TInt
+    then typecheck_exp c e'
+    else type_error i "typecheck_exp: Index i not of type TInt"
+                       
+  | Length e' ->
+    (* unsure *)
+    let _ = typecheck_exp c e' in
+    TInt
+    
+  | CStruct (id, id_exp_ls) -> failwith "todo: implement typecheck_exp CStruct"
+  | Proj (e', id) -> failwith "todo: implement typecheck_exp Proj"
+  | Call (e', exp_ls) -> failwith "todo: implement typecheck_exp Call"
+                            
+  | Bop (binop, e1, e2) -> begin match binop with
+      | Eq | Neq ->
+        let t1 = typecheck_exp c e1 in
+        let t2 = typecheck_exp c e2 in
+        if subtype c t1 t2 && subtype c t2 t1
+        then TBool
+        else type_error e "typecheck_exp: Eq/Neq subtype error"
+      | _ -> let (t1, t2, t) = typ_of_binop binop in
+        if typecheck_exp c e1 = t1 && typecheck_exp c e2 = t2
+        then t
+        else type_error e "typecheck_exp: Binop wrong expression types"
+    end
+    
+  | Uop (unop, e') ->
+    let (_, t) = typ_of_unop unop in
+    if typecheck_exp c e' = t (* unsure *)
+    then t
+    else type_error e' "typecheck_exp: Unop wrong expression type"
+    
 
 (* statements --------------------------------------------------------------- *)
 
@@ -227,6 +286,14 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      block typecheck rules.
 *)
 let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
+  let get_vdecl c id exp =
+    if lookup_local_option id tc = None
+    then (let t' = typecheck_exp tc exp in
+          let new_c = add_local tc id t' in
+          (new_c, false))
+    else type_error exp ("typecheck_stmt: variable " ^ id ^ " already in ctxt")
+  in
+  
   match s.elt with
   | Assn (e1, e2) ->
     let t1 = typecheck_exp tc e1 in
@@ -235,9 +302,52 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     then (tc, false)
     else type_error s ("exp not subtype of lhs in typecheck_stmt Assn")
 
-  | _ -> failwith "todo: implement typecheck_stmt"
+  | Decl (id, e) -> get_vdecl tc id e
 
-let rec typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : unit =
+  | Ret e_op -> begin match e_op with
+      | Some e -> let t = begin match to_ret with
+          | RetVal t -> t
+          | _ -> type_error e "typecheck_stmt: Ret to_ret type mismatch"
+        end in
+        let t' = typecheck_exp tc e in
+        if subtype tc t' t
+        then (tc, true)
+        else type_error e "typecheck_stmt: Ret exp not subtype of to_ret?"
+      | None -> (tc, true)
+    end
+
+  | SCall (e, ls) -> failwith "todo: implement typecheck_stmt SCall"
+
+  | If (e, ls1, ls2) ->
+    (* unsure: TYP_IFQ? *)
+    if typecheck_exp tc e = TBool
+    then (typecheck_block tc ls1 to_ret;
+          typecheck_block tc ls2 to_ret;
+          (tc, true))
+    else type_error e "typecheck_stmt: If conditional exp not of type TBool"
+
+  | Cast (rt, id, e, ls1, ls2) -> failwith "todo: implement typecheck_stmt Cast"
+
+  | For (vdecls, e_op, stmt_op, ls) ->
+    let rec get_vdecls ls c =
+      match ls with
+      | [] -> c
+      | (id, e) :: tl -> let (new_c, _) = get_vdecl c id e in
+        get_vdecls tl new_c
+    in
+    let new_tc = get_vdecls vdecls tc in
+    (* if typecheck_exp tc e = TBool
+       then *) (typecheck_block tc ls to_ret;
+          (tc, false)) 
+    ; failwith "todo: incomplete implement typecheck_stmt For"
+
+  | While (e, ls) ->
+    if typecheck_exp tc e = TBool
+    then (typecheck_block tc ls to_ret;
+          (tc, false))
+    else type_error e "typecheck_stmt: If conditional exp not of type TBool"
+
+and typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : unit =
   match ls with
   | [] -> ()
   | stmt :: [] -> let _, bool = typecheck_stmt tc stmt to_ret in
@@ -328,7 +438,6 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
   in get_struct_ctxt p tc
 
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  let structs = tc.structs in
   let rec get_function_ctxt prog c =
     match prog with
     | [] -> c
