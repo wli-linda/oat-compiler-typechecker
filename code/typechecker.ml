@@ -52,14 +52,12 @@ let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
   | TInt -> t2 = TInt
   | TRef rty1 -> begin
       match t2 with
-      | TBool | TInt -> failwith "subtype: only t1 is a ref type" (* actually all of these should
-                                                                   * just be false right lol *)
+      | TBool | TInt -> false
       | TRef rty2 | TNullRef rty2 -> subtype_ref c rty1 rty2
     end
   | TNullRef rty1 -> begin
       match t2 with
-      | TBool | TInt -> failwith "subtype: only t1 is a ref? type"
-      | TRef rty2 -> false
+      | TBool | TInt | TRef _ -> false
       | TNullRef rty2 -> subtype_ref c rty1 rty2
     end
 
@@ -69,12 +67,13 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   | RString -> t2 = RString
   | RArray t1' -> begin match t2 with
       | RArray t2' -> t1' = t2' (* is this needed? *)
-      | _ -> failwith "subtype: only rty1 is an array type"
+      | _ -> false
     end
   | RStruct id1 -> begin match t2 with
       (* not 100% sure of this *)
-      | RStruct id2 -> lookup_option id1 c != None && lookup_option id2 c != None
-      | _ -> failwith "subtype: only rty1 is a struct"
+      | RStruct id2 -> lookup_struct_option id1 c != None &&
+                       lookup_struct_option id2 c != None
+      | _ -> false
     end
   | RFun (ls1, ret_ty1) ->
     let rec subtype_args_ls ls1 ls2 =
@@ -82,21 +81,12 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
       | [], [] -> true
       | t1' :: tl1, t2' :: tl2 ->
         subtype c t2' t1' && subtype_args_ls tl1 tl2
-      | _ -> failwith "subtype: two funs w/different # of args"
+      | _ -> false
     in
     begin match t2 with
       | RFun (ls2, ret_ty2) ->
         subtype_rt c ret_ty1 ret_ty2 && subtype_args_ls ls1 ls2
-      (* &&
-         begin match ls1 with
-          | [] -> ls2 = []
-          | ht1 :: tl1 -> begin match ls2 with 
-          * no... need to use helper rec function subtype_fun probs
-              | [] -> false
-              | ht2 :: tl2 -> 
-            end
-         end *)
-      | _ -> failwith "subtype: only rty1 is function type"
+      | _ -> false
     end
 
 and subtype_rt (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
@@ -104,7 +94,7 @@ and subtype_rt (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
   | RetVoid -> t2 = RetVoid
   | RetVal t1' -> begin match t2 with
       | RetVal t2' -> subtype c t1' t2'
-      | _ -> failwith "subtype: rt2 is void"
+      | _ -> false
     end
 
 (* well-formed types -------------------------------------------------------- *)
@@ -132,9 +122,9 @@ and typecheck_ref (l : 'a Ast.node) (tc : Tctxt.t) (rty : Ast.rty) : unit =
   | RString -> ()
   | RArray t -> typecheck_ty l tc t
   | RStruct id -> begin
-      if lookup_option id tc != None
+      if lookup_struct_option id tc != None
       then ()
-      else type_error l "typecheck_ref: not in ctxt?"
+      else type_error l ("typecheck_ref: struct " ^ id ^ " not in ctxt?")
     end
   | RFun (ls, rt) ->
     let rec typecheck_args_ls args = 
@@ -142,7 +132,8 @@ and typecheck_ref (l : 'a Ast.node) (tc : Tctxt.t) (rty : Ast.rty) : unit =
       | [] -> ()
       | t' :: tl ->
         typecheck_ty l tc t';
-        typecheck_args_ls tl
+        (* Why does this line throw me in an infinite loop? *)
+        (*typecheck_args_ls tl*)
     in
     typecheck_args_ls ls;
     typecheck_rt l tc rt
@@ -185,7 +176,18 @@ let is_nullable_ty (t : Ast.ty) : bool =
 
 *)
 let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
-  failwith "todo: implement typecheck_exp"
+  match e.elt with
+  | CNull rty -> TRef rty
+  | CBool b -> TBool
+  | CInt i -> TInt
+  (*| CStr s -> TString*)
+  | Id id -> begin match lookup_option id c with
+      | Some x -> x
+      | None -> type_error e ("typecheck_exp: id " ^ id ^ " not in ctxt")
+    end
+    
+  | _ ->
+    failwith "todo: implement typecheck_exp"
 
 (* statements --------------------------------------------------------------- *)
 
@@ -225,7 +227,24 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      block typecheck rules.
 *)
 let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
-  failwith "todo: implement typecheck_stmt"
+  match s.elt with
+  | Assn (e1, e2) ->
+    let t1 = typecheck_exp tc e1 in
+    let t2 = typecheck_exp tc e2 in
+    if subtype tc t2 t1
+    then (tc, false)
+    else type_error s ("exp not subtype of lhs in typecheck_stmt Assn")
+
+  | _ -> failwith "todo: implement typecheck_stmt"
+
+let rec typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : unit =
+  match ls with
+  | [] -> ()
+  | stmt :: [] -> let _, bool = typecheck_stmt tc stmt to_ret in
+    if not bool then type_error stmt "typecheck_block: last stmt doesn't return"
+  | stmt :: tl -> let _, bool = typecheck_stmt tc stmt to_ret in
+    if bool then type_error stmt "typecheck_block: non-last stmt def returns"
+    else typecheck_block tc tl to_ret
 
 
 (* struct type declarations ------------------------------------------------- *)
@@ -252,8 +271,19 @@ let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
     - checks that the function actually returns
 *)
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
-  failwith "todo: typecheck_fdecl"
-
+  let {frtyp; fname; args; body} = f in
+  (* Do we need to check that arg ids are distinct? 
+   * let fs = List.map (fun (ty, id) -> id) args in *)
+  let rec extend_local_ctxt ls c =
+    match ls with
+    | [] -> c
+    | (ty, id) :: tl ->
+      let new_c = add_local c id ty in
+      extend_local_ctxt tl new_c
+  in
+  let new_c = extend_local_ctxt args tc in
+  typecheck_block new_c body frtyp
+    
 (* creating the typchecking context ----------------------------------------- *)
 
 (* The following functions correspond to the
@@ -283,13 +313,55 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 *)
 
 let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_struct_ctxt"
+  let tc = Tctxt.empty in
+  let rec get_struct_ctxt prog c =
+    match prog with
+    | [] -> c
+    | decl :: tl -> begin match decl with
+        | Gtdecl tdecl ->
+          let (id, fs) = tdecl.elt in
+          typecheck_tdecl c id fs tdecl; (* shouldn't this be covered by typecheck_prog? *)
+          let new_c = add_struct c id fs in
+          get_struct_ctxt tl new_c
+        | _ -> get_struct_ctxt tl c
+      end
+  in get_struct_ctxt p tc
 
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let structs = tc.structs in
+  let rec get_function_ctxt prog c =
+    match prog with
+    | [] -> c
+    | decl :: tl -> begin match decl with
+        | Gfdecl fdecl ->
+          let {frtyp; fname; args; _} = fdecl.elt in
+          let rec get_args_ty ls a =
+            match ls with
+            | [] -> a
+            | (t', id) :: tl -> get_args_ty tl (t' :: a)
+          in
+          (* Dunno if this is right, actually... *)
+          let fun_ty = TRef (RFun (List.rev @@ get_args_ty args [], frtyp)) in
+          let new_c = add_global c fname fun_ty in
+          get_function_ctxt tl new_c
+          (* typecheck_fdecl? *)
+        | _ -> get_function_ctxt tl c
+      end
+  in get_function_ctxt p tc
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let rec get_global_ctxt prog c =
+    match prog with
+    | [] -> c
+    | decl :: tl -> begin match decl with
+        | Gvdecl gdecl ->
+          let {name; init} = gdecl.elt in
+          let ty = typecheck_exp c init in
+          let new_c = add_global c name ty in
+          get_global_ctxt tl new_c
+        | _ -> get_global_ctxt tl c
+      end
+  in get_global_ctxt p tc
 
 
 (* This function implements the |- prog and the H ; G |- prog 
