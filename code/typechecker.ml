@@ -191,15 +191,17 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     typecheck_ty e c ty;
     List.iter (fun e' -> let t' = typecheck_exp c e' in
                 if not @@ subtype c t' ty
-                then type_error e' "typecheck_exp: CArr elem not subtype of ty") ls;
-    ty
+                then type_error e' ("typecheck_exp: CArr elem " ^
+                                    ml_string_of_ty t' ^ " not subtype of ty " ^
+                                    ml_string_of_ty ty)) ls;
+    TRef (RArray ty)
     
   | NewArr (ty, e') ->
     typecheck_ty e c ty;
     begin match ty with
       | TInt | TBool | TNullRef _ -> 
         if typecheck_exp c e' = TInt
-        then ty
+        then TRef (RArray ty)
         else type_error e' "typecheck_exp: NewArr expression not of int type"
       | _ -> type_error e' "typecheck_exp: NewArr type not int/bool/r?"
     end
@@ -211,12 +213,17 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
        lookup_local_option id c = None &&
        (let t' = typecheck_exp c e2 in
         subtype c t' ty)
-    then ty
+    then TRef (RArray ty)
     else type_error e "typecheck_exp: NewArrInit"
       
   | Index (e', i) ->
     if typecheck_exp c i = TInt
-    then typecheck_exp c e'
+    then let ty = typecheck_exp c e' in
+      begin match ty with
+        | TInt | TBool -> ty
+        | TRef (RArray ty') | TNullRef (RArray ty') -> ty'
+        | _ -> type_error e' ("typecheck_exp: Index lhs is type " ^ ml_string_of_ty ty)
+      end 
     else type_error i "typecheck_exp: Index i not of type TInt"
                        
   | Length e' ->
@@ -224,9 +231,33 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     let _ = typecheck_exp c e' in
     TInt
     
-  | CStruct (id, id_exp_ls) -> failwith "todo: implement typecheck_exp CStruct"
+  | CStruct (id, id_exp_ls) ->
+    (* List.sort compare ls *)
+    failwith "todo: implement typecheck_exp CStruct"
+      
   | Proj (e', id) -> failwith "todo: implement typecheck_exp Proj"
-  | Call (e', exp_ls) -> failwith "todo: implement typecheck_exp Call"
+                       
+  | Call (e', exp_ls) ->
+    let ty = typecheck_exp c e' in
+    let args, rt = begin match ty with
+      | TRef (RFun (args, rt)) -> args, rt
+      | _ -> type_error e' ("typecheck_exp: not calling a function, but ty " ^
+                            ml_string_of_ty ty)
+    end in
+    let rec subtype_args ls1 ls2 =
+      match ls1, ls2 with
+      | [], [] -> rt
+      | e1 :: tl1, t2 :: tl2 ->
+        let t1 = typecheck_exp c e1 in
+        if subtype c t1 t2
+        then subtype_args tl1 tl2
+        else type_error e ("typecheck_exp: Call expected arg " ^ ml_string_of_ty t2 ^
+                           " but got arg of type " ^ ml_string_of_ty t1)
+      | _ -> type_error e "typecheck_exp: Call wrong # of args"
+    in begin match subtype_args exp_ls args with
+      | RetVal t -> t
+      | RetVoid -> type_error e "typecheck_exp: Call void return"
+    end
                             
   | Bop (binop, e1, e2) -> begin match binop with
       | Eq | Neq ->
@@ -234,11 +265,15 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
         let t2 = typecheck_exp c e2 in
         if subtype c t1 t2 && subtype c t2 t1
         then TBool
-        else type_error e "typecheck_exp: Eq/Neq subtype error"
+        else type_error e ("typecheck_exp: Eq/Neq subtype error " ^
+                           ml_string_of_ty t1 ^ " and " ^
+                           ml_string_of_ty t2)
       | _ -> let (t1, t2, t) = typ_of_binop binop in
         if typecheck_exp c e1 = t1 && typecheck_exp c e2 = t2
         then t
-        else type_error e "typecheck_exp: Binop wrong expression types"
+        else type_error e ("typecheck_exp: Binop wrong expression types " ^
+                           ml_string_of_ty (typecheck_exp c e1) ^ " and " ^
+                           ml_string_of_ty (typecheck_exp c e2))
     end
     
   | Uop (unop, e') ->
@@ -300,7 +335,9 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     let t2 = typecheck_exp tc e2 in
     if subtype tc t2 t1
     then (tc, false)
-    else type_error s ("exp not subtype of lhs in typecheck_stmt Assn")
+    else type_error s ("exp " ^ ml_string_of_ty t2 ^
+                       " not subtype of lhs " ^
+                       ml_string_of_ty t1 ^ " in typecheck_stmt Assn")
 
   | Decl (id, e) -> get_vdecl tc id e
 
@@ -312,16 +349,37 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
         let t' = typecheck_exp tc e in
         if subtype tc t' t
         then (tc, true)
-        else type_error e "typecheck_stmt: Ret exp not subtype of to_ret?"
+        else type_error e ("typecheck_stmt: Ret exp " ^ ml_string_of_ty t' ^
+                           " not subtype of to_ret " ^ ml_string_of_ty t)
       | None -> (tc, true)
     end
 
-  | SCall (e, ls) -> failwith "todo: implement typecheck_stmt SCall"
+  | SCall (e, ls) ->
+    let ty = typecheck_exp tc e in
+    let args, rt = begin match ty with
+      | TRef (RFun (args, rt)) -> args, rt
+      | _ -> type_error e ("typecheck_stmt: not calling a function, but ty " ^
+                           ml_string_of_ty ty)
+    end in
+    let rec subtype_args ls1 ls2 =
+      match ls1, ls2 with
+      | [], [] ->
+        if rt = RetVoid
+        then (tc, false)
+        else type_error e "typecheck_stmt: SCall returning non-void type"
+      | e1 :: tl1, t2 :: tl2 ->
+        let t1 = typecheck_exp tc e1 in
+        if subtype tc t1 t2
+        then subtype_args tl1 tl2
+        else type_error e ("typecheck_stmt: SCall expected arg " ^ ml_string_of_ty t2 ^
+                           " but got arg of type " ^ ml_string_of_ty t1)
+      | _ -> type_error e "typecheck_exp: SCall wrong # of args"
+    in subtype_args ls args
 
   | If (e, ls1, ls2) ->
     (* unsure: TYP_IFQ? *)
     if typecheck_exp tc e = TBool
-    then (typecheck_block tc ls1 to_ret;
+    then (typecheck_block tc ls1 to_ret; (* not sure if this is problematic, not updating tc *)
           typecheck_block tc ls2 to_ret;
           (tc, true))
     else type_error e "typecheck_stmt: If conditional exp not of type TBool"
@@ -329,6 +387,8 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
   | Cast (rt, id, e, ls1, ls2) -> failwith "todo: implement typecheck_stmt Cast"
 
   | For (vdecls, e_op, stmt_op, ls) ->
+    (* add indexing var to ctxt here *)
+    (*
     let rec get_vdecls ls c =
       match ls with
       | [] -> c
@@ -337,24 +397,25 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     in
     let new_tc = get_vdecls vdecls tc in
     (* if typecheck_exp tc e = TBool
-       then *) (typecheck_block tc ls to_ret;
-          (tc, false)) 
-    ; failwith "todo: incomplete implement typecheck_stmt For"
+       then *) (typecheck_block tc ls to_ret, false) 
+    ; *) failwith "todo: incomplete implement typecheck_stmt For"
 
   | While (e, ls) ->
     if typecheck_exp tc e = TBool
-    then (typecheck_block tc ls to_ret;
-          (tc, false))
+    then (typecheck_block tc ls to_ret, false)
     else type_error e "typecheck_stmt: If conditional exp not of type TBool"
 
-and typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : unit =
+and typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : Tctxt.t =
   match ls with
-  | [] -> ()
-  | stmt :: [] -> let _, bool = typecheck_stmt tc stmt to_ret in
-    if not bool then type_error stmt "typecheck_block: last stmt doesn't return"
-  | stmt :: tl -> let _, bool = typecheck_stmt tc stmt to_ret in
-    if bool then type_error stmt "typecheck_block: non-last stmt def returns"
-    else typecheck_block tc tl to_ret
+  | [] -> tc
+  | stmt :: [] -> let tc', bool = typecheck_stmt tc stmt to_ret in
+    (* may need to change signature of function to indicate whether last stmt def returns *)
+    if not bool then (*type_error stmt "typecheck_block: last stmt doesn't return"*) tc'
+    else tc'
+  | stmt :: tl -> let tc', bool = typecheck_stmt tc stmt to_ret in
+    (* honestly no idea *)
+    (*if bool then type_error stmt "typecheck_block: non-last stmt def returns"
+      else *) typecheck_block tc' tl to_ret
 
 
 (* struct type declarations ------------------------------------------------- *)
@@ -392,7 +453,7 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
       extend_local_ctxt tl new_c
   in
   let new_c = extend_local_ctxt args tc in
-  typecheck_block new_c body frtyp
+  let _ = typecheck_block new_c body frtyp in ()
     
 (* creating the typchecking context ----------------------------------------- *)
 
@@ -438,6 +499,16 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
   in get_struct_ctxt p tc
 
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
+  let rec get_builtins_ctxt ls c =
+    match ls with
+    | [] -> c
+    | (id, (args, rt)) :: tl ->
+      let fun_ty = TRef (RFun (args, rt)) in
+      let new_c = add_global c id fun_ty in
+      get_builtins_ctxt tl new_c
+  in
+  let tc' = get_builtins_ctxt builtins tc in
+  
   let rec get_function_ctxt prog c =
     match prog with
     | [] -> c
@@ -456,7 +527,7 @@ let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
           (* typecheck_fdecl? *)
         | _ -> get_function_ctxt tl c
       end
-  in get_function_ctxt p tc
+  in get_function_ctxt p tc'
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   let rec get_global_ctxt prog c =
