@@ -66,13 +66,17 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   match t1 with
   | RString -> t2 = RString
   | RArray t1' -> begin match t2 with
-      | RArray t2' -> t1' = t2' (* is this needed? *)
+      | RArray t2' -> t1' = t2' (* todo: is this needed? *)
       | _ -> false
     end
   | RStruct id1 -> begin match t2 with
-      (* todo: not sure of this at all *)
-      | RStruct id2 -> lookup_struct_option id1 c != None &&
-                       lookup_struct_option id2 c != None
+      | RStruct id2 ->
+        begin match lookup_struct_option id2 c with
+          | Some fs2 ->
+            (* todo: may not be most time-efficient implementation *)
+            List.for_all (fun f -> lookup_field_option id1 f.fieldName c = Some f.ftyp) fs2
+          | _ -> false
+        end
       | _ -> false
     end
   | RFun (ls1, ret_ty1) ->
@@ -132,7 +136,7 @@ and typecheck_ref (l : 'a Ast.node) (tc : Tctxt.t) (rty : Ast.rty) : unit =
       | [] -> ()
       | t' :: tl ->
         typecheck_ty l tc t';
-        (* Why does this line throw me in an infinite loop? *)
+        (* todo: Why does this line throw me in an infinite loop? *)
         (*typecheck_args_ls tl*)
     in
     typecheck_args_ls ls;
@@ -232,11 +236,34 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     let _ = typecheck_exp c e' in
     TInt
     
-  | CStruct (id, id_exp_ls) ->
-    (* List.sort compare ls *)
-    failwith "todo: implement typecheck_exp CStruct"
+  | CStruct (struct_id, fid_exp_ls) -> begin match lookup_struct_option struct_id c with
+      | Some _ ->
+        let rec check_fields ls =
+          match ls with
+          | [] -> TRef (RStruct struct_id)
+          | (fid', e') :: tl ->
+            let t' = typecheck_exp c e' in
+            let t = begin match lookup_field_option struct_id fid' c with
+              | Some ty -> ty
+              | None -> type_error e' ("typecheck_exp: Struct field " ^ fid' ^ " not in ctxt")
+            end in
+            if subtype c t' t
+            then check_fields tl
+            else type_error e' ("typecheck_exp: field should be subtype of ty " ^
+                                ml_string_of_ty t ^ " not ty " ^ ml_string_of_ty t')
+        in check_fields fid_exp_ls
+      | None -> type_error e "typecheck_exp: Struct type not in ctxt"
+    end
+  (* todo (?): Alternatiive implementation w/List.sort compare ls *)
       
-  | Proj (e', id) -> failwith "todo: implement typecheck_exp Proj"
+  | Proj (e', fid) -> begin match typecheck_exp c e' with
+      | TRef (RStruct struct_id) -> begin match lookup_field_option struct_id fid c with
+          | Some t -> t
+          | None -> type_error e' ("typecheck_exp: Proj exp.x " ^
+                                   fid ^ " not in struct " ^ struct_id)
+        end
+      | ty -> type_error e' ("typecheck_exp: Proj exp not of struct but " ^ ml_string_of_ty ty)
+    end
                        
   | Call (e', exp_ls) ->
     let ty = typecheck_exp c e' in
