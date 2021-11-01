@@ -211,14 +211,12 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
       | _ -> type_error e' "typecheck_exp: NewArr type not int/bool/r?"
     end
 
-  | NewArrInit (ty, e1, id, e2) ->
-    typecheck_ty e c ty;
-    (* todo: unsure *)
-    if typecheck_exp c e = TInt &&
+  | NewArrInit (t, e1, id, e2) ->
+    if typecheck_exp c e1 = TInt &&
        lookup_local_option id c = None &&
        (let t' = typecheck_exp c e2 in
-        subtype c t' ty)
-    then TRef (RArray ty)
+        subtype c t' t)
+    then TRef (RArray t)
     else type_error e "typecheck_exp: NewArrInit"
       
   | Index (e', i) ->
@@ -374,7 +372,12 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
       | _ -> ()
     end in
     let t1 = typecheck_exp tc e1 in
-    let t2 = typecheck_exp tc e2 in
+    let t2 = typecheck_exp tc e2 in (* todo: hmm how to handle assigning to null...
+    let () = begin match t2 with
+      | TNullRef _ ->
+        if not (is_nullable_ty t1)
+        then type_error e2 "typecheck_exp: Assn e2 is null value?"
+      | _ -> () end in *)
     if subtype tc t2 t1
     then (tc, false)
     else type_error s ("exp " ^ ml_string_of_ty t2 ^
@@ -420,11 +423,9 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
 
   | If (e, ls1, ls2) ->
     if typecheck_exp tc e = TBool
-    then (typecheck_block tc ls1 to_ret; (* todo: not sure if this is problematic, not updating tc 
-                                          * also should be returning conjunction of blk1 and 2,
-                                          * not just true *)
-          typecheck_block tc ls2 to_ret;
-          (tc, true))
+    then (let _, r1 = typecheck_block tc ls1 to_ret in
+          let _, r2 = typecheck_block tc ls2 to_ret in
+          (tc, r1 && r2))
     else type_error e "typecheck_stmt: If conditional exp not of type TBool"
 
   | Cast (rty, id, e, ls1, ls2) ->
@@ -436,9 +437,9 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     end in
     if subtype tc ty' ty
     then (let new_tc = add_local tc id ty in
-          typecheck_block new_tc ls1 to_ret;
-          typecheck_block tc ls2 to_ret;
-          (tc, true))
+          let _, r1 = typecheck_block new_tc ls1 to_ret in
+          let _, r2 = typecheck_block tc ls2 to_ret in
+          (tc, r1 && r2))
     else type_error e ("typecheck_stmt: Cast exp of " ^ ml_string_of_ty ty' ^
                        " not subtype of " ^ id ^ " of type " ^ ml_string_of_ty ty)
 
@@ -453,29 +454,31 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     begin match e_op with
       | Some e ->
         if typecheck_exp new_tc e = TBool
-        then (let _ = typecheck_block new_tc ls to_ret in
-              (* todo: L2 and stmt giving (L3, false) ?? *)
-              (tc, false))
+        then (let blk_tc, _ = typecheck_block new_tc ls to_ret in
+              let _, b = begin match stmt_op with
+                | Some stmt -> typecheck_stmt blk_tc stmt to_ret
+                | None -> type_error s "typecheck_stmt: For case no stmt"
+              end in (if not b
+                      then (tc, false)
+                      else type_error s "typecheck_stmt: For stmt returns"))
         else type_error s "typecheck_stmt: For"
       | None -> type_error s "typecheck_stmt: For"
   end
 
   | While (e, ls) ->
     if typecheck_exp tc e = TBool
-    then (typecheck_block tc ls to_ret, false)
+    then let tc', _ = typecheck_block tc ls to_ret in (tc', false)
     else type_error e "typecheck_stmt: If conditional exp not of type TBool"
 
-and typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : Tctxt.t =
+and typecheck_block (tc : Tctxt.t) (ls:Ast.block) (to_ret:ret_ty) : Tctxt.t * bool =
   match ls with
-  | [] -> tc
-  | stmt :: [] -> let tc', bool = typecheck_stmt tc stmt to_ret in
-    (* todo: may need to change signature of function to indicate whether last stmt def returns *)
-    if not bool then (*type_error stmt "typecheck_block: last stmt doesn't return"*) tc'
-    else tc'
+  | [] -> (tc, false)
+  | stmt :: [] -> typecheck_stmt tc stmt to_ret
   | stmt :: tl -> let tc', bool = typecheck_stmt tc stmt to_ret in
-    (* todo: honestly no idea *)
-    (* if bool then type_error stmt "typecheck_block: non-last stmt def returns"
-      else *) typecheck_block tc' tl to_ret
+    if bool
+    then type_error stmt ("typecheck_block: non-last stmt def returns " ^
+                          string_of_stmt @@ List.hd tl)
+    else typecheck_block tc' tl to_ret
 
 
 (* struct type declarations ------------------------------------------------- *)
@@ -513,7 +516,9 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
       extend_local_ctxt tl new_c
   in
   let new_c = extend_local_ctxt args tc in
-  let _ = typecheck_block new_c body frtyp in ()
+  let _, b = typecheck_block new_c body frtyp in
+  if not b
+  then type_error l ("typecheck_fdecl: blk doesn't definitely return for " ^ fname)
     
 (* creating the typchecking context ----------------------------------------- *)
 
