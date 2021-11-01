@@ -237,7 +237,10 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     TInt
     
   | CStruct (struct_id, fid_exp_ls) -> begin match lookup_struct_option struct_id c with
-      | Some _ ->
+      | Some fs ->
+        (* todo: probably got a better way to check for dups / not enough fields *)
+        if List.length fs = List.length fid_exp_ls
+        then begin
         let rec check_fields ls =
           match ls with
           | [] -> TRef (RStruct struct_id)
@@ -252,6 +255,8 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
             else type_error e' ("typecheck_exp: field should be subtype of ty " ^
                                 ml_string_of_ty t ^ " not ty " ^ ml_string_of_ty t')
         in check_fields fid_exp_ls
+      end
+        else type_error e "type_error: CStruct too many fields"
       | None -> type_error e "typecheck_exp: Struct type not in ctxt"
     end
   (* todo (?): Alternatiive implementation w/List.sort compare ls *)
@@ -358,7 +363,16 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
   in
   
   match s.elt with
-  | Assn (e1, e2) ->
+  | Assn (e1, e2) -> let () = begin match e1.elt with
+      | Id id -> begin match lookup_global_option id tc with
+          | Some (TRef (RFun _)) ->
+            (* todo: this seems like a shoddy way of doing things lmao *)
+            if lookup_local_option id tc = None
+            then type_error e1 ("typecheck_stmt: Assn existing global function " ^ id)
+          | _ -> ()
+        end
+      | _ -> ()
+    end in
     let t1 = typecheck_exp tc e1 in
     let t2 = typecheck_exp tc e2 in
     if subtype tc t2 t1
@@ -536,10 +550,11 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
     | [] -> c
     | decl :: tl -> begin match decl with
         | Gtdecl tdecl ->
-          let (id, fs) = tdecl.elt in
-          typecheck_tdecl c id fs tdecl; (* shouldn't this be covered by typecheck_prog? *)
-          let new_c = add_struct c id fs in
-          get_struct_ctxt tl new_c
+          let (id, fs) = tdecl.elt in 
+          if lookup_struct_option id c = None
+          then (let new_c = add_struct c id fs in
+                get_struct_ctxt tl new_c)
+          else type_error tdecl ("create_struct_ctxt: duplicate struct id " ^ id)
         | _ -> get_struct_ctxt tl c
       end
   in get_struct_ctxt p tc
@@ -561,16 +576,18 @@ let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
     | decl :: tl -> begin match decl with
         | Gfdecl fdecl ->
           let {frtyp; fname; args; _} = fdecl.elt in
-          let rec get_args_ty ls a =
-            match ls with
-            | [] -> a
-            | (t', id) :: tl -> get_args_ty tl (t' :: a)
-          in
-          (* Dunno if this is right, actually... *)
-          let fun_ty = TRef (RFun (List.rev @@ get_args_ty args [], frtyp)) in
-          let new_c = add_global c fname fun_ty in
-          get_function_ctxt tl new_c
-          (* typecheck_fdecl? *)
+          if lookup_global_option fname c = None
+          then begin let rec get_args_ty ls a =
+                       match ls with
+                       | [] -> a
+                       | (t', id) :: tl -> get_args_ty tl (t' :: a)
+            in
+            (* todo: Dunno if this is right, actually... *)
+            let fun_ty = TRef (RFun (List.rev @@ get_args_ty args [], frtyp)) in
+            let new_c = add_global c fname fun_ty in
+            get_function_ctxt tl new_c
+          end
+          else type_error fdecl ("create_function_ctxt: duplicate function name " ^ fname)
         | _ -> get_function_ctxt tl c
       end
   in get_function_ctxt p tc'
@@ -582,9 +599,11 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
     | decl :: tl -> begin match decl with
         | Gvdecl gdecl ->
           let {name; init} = gdecl.elt in
-          let ty = typecheck_exp c init in
-          let new_c = add_global c name ty in
-          get_global_ctxt tl new_c
+          if lookup_global_option name c = None
+          then (let ty = typecheck_exp c init in
+                let new_c = add_global c name ty in
+                get_global_ctxt tl new_c)
+          else type_error gdecl ("create_global_ctxt: duplicate global var " ^ name)
         | _ -> get_global_ctxt tl c
       end
   in get_global_ctxt p tc
