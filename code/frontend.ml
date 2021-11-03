@@ -287,7 +287,25 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
        of the array struct representation.
   *)
   | Ast.Length e ->
-    failwith "todo: implement Ast.Length case"
+    let ans_ty, arr_op, arr_code = cmp_exp tc c e in
+    let len_id = gensym "ptr" in
+    let ans_id = gensym "length" in
+    I64, Id ans_id, arr_code >@
+                    [I (len_id, Gep(ans_ty, arr_op, [Const 0L; Const 0L]))] >@
+                    [I (ans_id, Load(Ptr I64, Id len_id))]
+    
+    (* just memorializing this mess for my own embarrassment...
+    let arr_ty, _, _ = cmp_exp tc c e in
+    begin match arr_ty with
+      | Ptr (Struct [I64; Array(i, _)]) -> I64, Const (Int64.of_int i), []
+      | _ -> failwith @@ "todo: implement Ast.Length case" ^ string_of_ty arr_ty
+    end *)
+(*
+      | CArr (elt_ty, cs) -> let i = Int64.of_int @@ List.length cs in
+        cmp_ty tc elt_ty, Const i, []
+      | NewArr (_, e') -> cmp_exp tc c e'
+      | _ -> failwith @@ "todo: implement Ast.Length case" ^ Astlib.string_of_exp e
+    end *)
 
   | Ast.Index (e, i) ->
     let ans_ty, ptr_op, code = cmp_exp_lhs tc c exp in

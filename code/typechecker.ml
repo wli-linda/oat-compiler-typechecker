@@ -181,7 +181,7 @@ let is_nullable_ty (t : Ast.ty) : bool =
 *)
 let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   match e.elt with
-  | CNull rty -> TRef rty
+  | CNull rty -> typecheck_ty e c (TRef rty); TNullRef rty
   | CBool b -> TBool
   | CInt i -> TInt
   | CStr s -> TRef RString (* todo: maybe? *)
@@ -372,12 +372,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
       | _ -> ()
     end in
     let t1 = typecheck_exp tc e1 in
-    let t2 = typecheck_exp tc e2 in (* todo: hmm how to handle assigning to null...
-    let () = begin match t2 with
-      | TNullRef _ ->
-        if not (is_nullable_ty t1)
-        then type_error e2 "typecheck_exp: Assn e2 is null value?"
-      | _ -> () end in *)
+    let t2 = typecheck_exp tc e2 in
+    (* todo: hmm unsure how to handle assigning to null still... *)
+    if is_nullable_ty t1 && to_ret != RetVoid
+    then type_error e1 "typecheck_exp: Assn e1 is null value?"; 
     if subtype tc t2 t1
     then (tc, false)
     else type_error s ("exp " ^ ml_string_of_ty t2 ^
