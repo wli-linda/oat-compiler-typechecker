@@ -196,7 +196,22 @@ let oat_alloc_array ct (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
    - make sure to calculate the correct amount of space to allocate!
 *)
 let oat_alloc_struct ct (id:Ast.id) : Ll.ty * operand * stream =
-  failwith "TODO: oat_alloc_struct"
+  (* todo: still could be wrong *)
+  let ans_id, struct_id = gensym "struct", gensym "raw_struct" in
+  let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
+  let struct_ty = Ptr I64 in
+  let fs = TypeCtxt.lookup id ct in
+    (* retain for embarrassment:
+     * begin match TypeCtxt.lookup_struct_option id ct with
+       | None -> failwith @@ "oat_alloc_struct: nonexistent struct id " ^ id
+       | Some fs -> fs
+       end in *)
+  let size = Const (Int64.of_int @@ List.length fs) in
+  ans_ty, Id ans_id, lift
+    [ struct_id, Call(struct_ty, Gid "oat_malloc", [I64, size])
+    ; ans_id, Bitcast(struct_ty, Id struct_id, ans_ty) ]
+(*
+  ; failwith "TODO: oat_alloc_struct"*)
 
 
 let str_arr_ty s = Array(1 + String.length s, I8)
@@ -293,19 +308,6 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
     I64, Id ans_id, arr_code >@
                     [I (len_id, Gep(ans_ty, arr_op, [Const 0L; Const 0L]))] >@
                     [I (ans_id, Load(Ptr I64, Id len_id))]
-    
-    (* just memorializing this mess for my own embarrassment...
-    let arr_ty, _, _ = cmp_exp tc c e in
-    begin match arr_ty with
-      | Ptr (Struct [I64; Array(i, _)]) -> I64, Const (Int64.of_int i), []
-      | _ -> failwith @@ "todo: implement Ast.Length case" ^ string_of_ty arr_ty
-    end *)
-(*
-      | CArr (elt_ty, cs) -> let i = Int64.of_int @@ List.length cs in
-        cmp_ty tc elt_ty, Const i, []
-      | NewArr (_, e') -> cmp_exp tc c e'
-      | _ -> failwith @@ "todo: implement Ast.Length case" ^ Astlib.string_of_exp e
-    end *)
 
   | Ast.Index (e, i) ->
     let ans_ty, ptr_op, code = cmp_exp_lhs tc c exp in
@@ -356,7 +358,18 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
        - store the resulting value into the structure
    *)
   | Ast.CStruct (id, l) ->
-    failwith "TODO: Ast.CStruct"
+    let struct_ty, struct_op, alloc_code = oat_alloc_struct tc id in
+    let add_elt s (fid, elt) =
+      let ast_field_ty, i = TypeCtxt.lookup_field_name id fid tc in
+      let ll_elt_ty = cmp_ty tc ast_field_ty in
+      let elt_op, elt_code = cmp_exp_as tc c elt ll_elt_ty in
+      let ind = gensym "field" in 
+      s >@ elt_code >@ lift
+        [ ind, Gep(struct_ty, struct_op, [Const 0L; Const i ])
+        ; gensym "store",  Store(ll_elt_ty, elt_op, Id ind) ] 
+    in
+    let ind_code = List.(fold_left add_elt [] l) in
+    struct_ty, struct_op, alloc_code >@ ind_code
 
   | Ast.Proj (e, id) ->
     let ans_ty, ptr_op, code = cmp_exp_lhs tc c exp in
@@ -381,8 +394,15 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
      You will find the TypeCtxt.lookup_field_name function helpful.
   *)
   | Ast.Proj (e, i) ->
-    failwith "todo: Ast.Proj case of cmp_exp_lhs"
-
+    let ty, struct_op, code = cmp_exp tc c e in
+    let struct_id = begin match ty with
+      | Ptr (Namedt tid) -> tid
+      | _ -> failwith @@ "cmp_exp_lhs: Proj exp type of " ^ string_of_ty ty
+    end in
+    let t, ind = TypeCtxt.lookup_field_name struct_id i tc in
+    let op = gensym "proj" in
+    cmp_ty tc t, Id op, code >@ [I (op, Gep (ty, struct_op, [Const 0L; Const ind]))]
+                                
 
   (* ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
      GEP calculation. This should be very straightforward, except that you'll need to use a Bitcast.
