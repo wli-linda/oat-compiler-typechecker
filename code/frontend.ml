@@ -201,17 +201,10 @@ let oat_alloc_struct ct (id:Ast.id) : Ll.ty * operand * stream =
   let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
   let struct_ty = Ptr I64 in
   let fs = TypeCtxt.lookup id ct in
-    (* retain for embarrassment:
-     * begin match TypeCtxt.lookup_struct_option id ct with
-       | None -> failwith @@ "oat_alloc_struct: nonexistent struct id " ^ id
-       | Some fs -> fs
-       end in *)
   let size = Const (Int64.of_int @@ List.length fs) in
   ans_ty, Id ans_id, lift
     [ struct_id, Call(struct_ty, Gid "oat_malloc", [I64, size])
     ; ans_id, Bitcast(struct_ty, Id struct_id, ans_ty) ]
-(*
-  ; failwith "TODO: oat_alloc_struct"*)
 
 
 let str_arr_ty s = Array(1 + String.length s, I8)
@@ -397,7 +390,7 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
     let ty, struct_op, code = cmp_exp tc c e in
     let struct_id = begin match ty with
       | Ptr (Namedt tid) -> tid
-      | _ -> failwith @@ "cmp_exp_lhs: Proj exp type of " ^ string_of_ty ty
+      | _ -> failwith @@ "cmp_exp: Proj exp type of " ^ string_of_ty ty
     end in
     let t, ind = TypeCtxt.lookup_field_name struct_id i tc in
     let op = gensym "proj" in
@@ -420,7 +413,6 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
     ans_ty, (Id ptr_id),
     arr_code >@ ind_code >@ lift
       [ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
-
    
 
   | _ -> failwith "invalid lhs expression"
@@ -454,7 +446,6 @@ and cmp_exp_as (tc : TypeCtxt.t) (c:Ctxt.t) (e:Ast.exp node) (t:Ll.ty) : Ll.oper
    program is not well-formed and your compiler may throw an error.
  *)
 and cmp_stmt (tc : TypeCtxt.t) (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
-    
   match stmt.elt with
   | Ast.Decl (id, init) ->
      let ll_ty, init_op, init_code = cmp_exp tc c init in
@@ -492,7 +483,18 @@ and cmp_stmt (tc : TypeCtxt.t) (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt
          merge label after either block
   *)
   | Ast.Cast (typ, id, exp, notnull, null) ->
-    failwith "todo: implement Ast.Cast case"
+    let guard_ty, guard_op, guard_code = cmp_exp tc c
+        (no_loc (Bop (Neq, no_loc @@ CNull typ, exp))) in
+    let new_c, alloc_code = cmp_stmt tc c rt (no_loc (Decl (id, exp))) in
+    let _, notnull_code = cmp_block tc new_c rt notnull in
+    let _, null_code = cmp_block tc c rt null in
+    let lt, le, lm = gensym "notnull", gensym "null", gensym "merge" in (* where's the ret 0 after 
+                                                                      * lbl merge incorporated? *)
+    c, guard_code 
+       >:: T(Cbr (guard_op, lt, le))
+       >:: L lt >@ alloc_code >@ notnull_code >:: T(Br lm) 
+       >:: L le >@ null_code >:: T(Br lm) 
+       >:: L lm
 
   | Ast.While (guard, body) ->
      let guard_ty, guard_op, guard_code = cmp_exp tc c guard in
@@ -657,7 +659,17 @@ let rec cmp_gexp c (tc : TypeCtxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.
 
   (* STRUCT TASK: Complete this code that generates the global initializers for a struct value. *)  
   | CStruct (id, cs) ->
-    failwith "todo: Cstruct case of cmp_gexp"
+    let elts, gs, ts = List.fold_right
+        (fun (fid, cst) (elts, gs, ts) ->
+           let (ty, ginit), gs' = cmp_gexp c tc cst in
+           (ty, ginit)::elts, gs' @ gs, ty :: ts) cs ([], [], [])
+    in
+    let gid = gensym "global_struct" in
+    let struct_t = Struct ts in
+    let struct_i = GStruct elts in
+    let final_t = Namedt id in
+    let cast = GBitcast (Ptr struct_t, GGid gid, Ptr final_t) in
+    (Ptr final_t, cast), (gid, (struct_t, struct_i))::gs
 
   | _ -> failwith "bad global initializer"
 
