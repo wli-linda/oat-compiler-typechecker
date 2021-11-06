@@ -196,7 +196,6 @@ let oat_alloc_array ct (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
    - make sure to calculate the correct amount of space to allocate!
 *)
 let oat_alloc_struct ct (id:Ast.id) : Ll.ty * operand * stream =
-  (* todo: still could be wrong *)
   let ans_id, struct_id = gensym "struct", gensym "raw_struct" in
   let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
   let struct_ty = Ptr I64 in
@@ -329,7 +328,7 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
     arr_ty, arr_op, size_code >@ alloc_code
 
-  (* ARRAY TASK: Modify the compilation of the NewArrInit construct to implement the 
+  (* todo: ARRAY TASK: Modify the compilation of the NewArrInit construct to implement the 
      initializer:
          - the initializer is a loop that uses id as the index
          - each iteration of the loop the code evaluates e2 and assigns it
@@ -397,7 +396,7 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
     cmp_ty tc t, Id op, code >@ [I (op, Gep (ty, struct_op, [Const 0L; Const ind]))]
                                 
 
-  (* ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
+  (* todo: ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
      GEP calculation. This should be very straightforward, except that you'll need to use a Bitcast.
      You might want to take a look at the implementation of 'oat_assert_array_length'
      in runtime.c.   (That check is where the infamous "ArrayIndexOutOfBounds" exception would 
@@ -405,6 +404,7 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
   *)
   | Ast.Index (e, i) ->
     let arr_ty, arr_op, arr_code = cmp_exp tc c e in
+    (*let _, len_op, len_code = cmp_exp tc c (no_loc (Length e)) in*)
     let _, ind_op, ind_code = cmp_exp tc c i in
     let ans_ty = match arr_ty with 
       | Ptr (Struct [_; Array (_,t)]) -> t 
@@ -412,7 +412,9 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
     let ptr_id, tmp_id, call_id = gensym "index_ptr", gensym "tmp", gensym "call" in
     ans_ty, (Id ptr_id),
     arr_code >@ ind_code >@ lift
-      [ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
+      [ tmp_id,  Gep(arr_ty, arr_op, [Const 0L; Const 0L])
+      ; call_id, Call(Void, Gid "oat_assert_array_length", [(Ptr I64, Id tmp_id); (I64, ind_op)])
+      ; ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
    
 
   | _ -> failwith "invalid lhs expression"
