@@ -374,9 +374,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     let t1 = typecheck_exp tc e1 in
     let t2 = typecheck_exp tc e2 in
     (* todo: maybe handling better now...? still not 100% sure *)
+    (* hmm, actually this maybe doesn't make sense? *)
     let () = begin match e2.elt with
       | NewArrInit _ -> ()
-      | _ ->
+      | _ -> 
         if is_nullable_ty t1 && to_ret != RetVoid
         then type_error e1 "typecheck_exp: Assn e1 is null";
     end in 

@@ -341,7 +341,31 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
   | Ast.NewArrInit (elt_ty, e1, id, e2) ->    
     let _, size_op, size_code = cmp_exp tc c e1 in
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
-    arr_ty, arr_op, size_code >@ alloc_code
+    let arr_id = gensym "newarrinit" in
+    let dbl_ptr = [I (arr_id, Alloca arr_ty)] >::
+                  I (gensym "store", Store (arr_ty, arr_op, Id arr_id)) (*
+                  [I (arr_id, Bitcast(arr_ty , arr_op, Ptr arr_ty))] *) in 
+    let new_c = Ctxt.add c arr_id (Ptr arr_ty, Id arr_id) in
+    let arr_exp = no_loc @@ Id arr_id in
+    
+    let vdecls = [id, no_loc @@ CInt 0L] in
+    let e_id = no_loc (Id id) in
+    let guard = Some (no_loc @@ Bop (Lt, e_id, e1)) in
+    let iter = no_loc @@ Bop (Add, e_id, no_loc (CInt 1L)) in
+    let after = Some (no_loc @@ Assn (e_id, iter)) in
+    let index = no_loc @@ Index (arr_exp, e_id) in
+    let body = [no_loc @@ Assn (index, e2)] in
+    let _, for_code = cmp_stmt tc new_c arr_ty (no_loc @@ For (vdecls, guard, after, body)) in
+
+    arr_ty, arr_op, size_code >@ alloc_code >@ dbl_ptr >@ for_code
+  (* very wrong impl, probably:
+    let _, idx_op, index_code = cmp_exp tc c (no_loc @@ Id id) in
+    let path_id = gensym "newarrid" in
+    let new_c = Ctxt.add c path_id (arr_ty, Id path_id) in
+    let _, assn_code = cmp_stmt tc new_c (cmp_ty tc elt_ty)
+        (no_loc @@ Assn (no_loc (Id path_id), e2)) in
+    arr_ty, arr_op, size_code >@ alloc_code >@ index_code >@ lift
+                      [path_id, Gep(arr_ty, arr_op, [Const 0L; Const 1L; idx_op])] >@ assn_code *)
 
    (* STRUCT TASK: complete this code that compiles struct expressions.
       For each field component of the struct
@@ -403,12 +427,15 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
      be thrown...)
   *)
   | Ast.Index (e, i) ->
-    let arr_ty, arr_op, arr_code = cmp_exp tc c e in
+    let arr_ty, arr_op, arr_code = (*begin match e.elt with
+      | Id _ -> cmp_exp_lhs tc c e
+                                     | _ -> *) cmp_exp tc c e
+    (*end*) in
     (*let _, len_op, len_code = cmp_exp tc c (no_loc (Length e)) in*)
     let _, ind_op, ind_code = cmp_exp tc c i in
     let ans_ty = match arr_ty with 
-      | Ptr (Struct [_; Array (_,t)]) -> t 
-      | _ -> failwith "Index: indexed into non pointer" in
+      | Ptr (Struct [_; Array (_, t)]) -> t 
+      | _ -> failwith @@ "Index: indexed into non pointer" ^ string_of_ty arr_ty in
     let ptr_id, tmp_id, call_id = gensym "index_ptr", gensym "tmp", gensym "call" in
     ans_ty, (Id ptr_id),
     arr_code >@ ind_code >@ lift
@@ -455,9 +482,9 @@ and cmp_stmt (tc : TypeCtxt.t) (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt
      let c' = Ctxt.add c id (Ptr ll_ty, Id res_id) in
      c', init_code 
          >:: E(res_id, Alloca ll_ty)
-         >:: I(gensym "store",     Store (ll_ty, init_op, Id res_id))
+         >:: I(gensym "store", Store (ll_ty, init_op, Id res_id))
      
-  | Ast.Assn (path ,e) ->
+  | Ast.Assn (path, e) ->
      let ll_ty, pop, path_code = cmp_exp_lhs tc c path in
      let eop, exp_code = cmp_exp_as tc c e ll_ty in
      c, path_code >@ exp_code >:: I(gensym "store", (Store (ll_ty, eop, pop)))
