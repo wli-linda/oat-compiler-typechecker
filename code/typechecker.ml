@@ -66,14 +66,13 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   match t1 with
   | RString -> t2 = RString
   | RArray t1' -> begin match t2 with
-      | RArray t2' -> t1' = t2' (* todo: is this needed? *)
+      | RArray t2' -> t1' = t2'
       | _ -> false
     end
   | RStruct id1 -> begin match t2 with
       | RStruct id2 ->
         begin match lookup_struct_option id2 c with
           | Some fs2 ->
-            (* todo: may not be most time-efficient implementation *)
             List.for_all (fun f -> lookup_field_option id1 f.fieldName c = Some f.ftyp) fs2
           | _ -> false
         end
@@ -136,7 +135,8 @@ and typecheck_ref (l : 'a Ast.node) (tc : Tctxt.t) (rty : Ast.rty) : unit =
       | [] -> ()
       | t' :: tl ->
         typecheck_ty l tc t';
-        (* todo: Why does this line throw me in an infinite loop? *)
+        (* todo: Why does this line throw me in an infinite loop? 
+         * more imptly... how come things work without this line?? *)
         (*typecheck_args_ls tl*)
     in
     typecheck_args_ls ls;
@@ -184,7 +184,7 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | CNull rty -> typecheck_ty e c (TRef rty); TNullRef rty
   | CBool b -> TBool
   | CInt i -> TInt
-  | CStr s -> TRef RString (* todo: maybe? *)
+  | CStr s -> TRef RString 
                 
   | Id id -> begin match lookup_option id c with
       | Some x -> x
@@ -203,7 +203,6 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | NewArr (ty, e') ->
     typecheck_ty e c ty;
     begin match ty with
-      (* todo: pretty sure this contributes to the Eq/Neq error *) 
       | TInt | TBool | TNullRef _ -> 
         if typecheck_exp c e' = TInt
         then TRef (RArray ty)
@@ -214,7 +213,8 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | NewArrInit (t, e1, id, e2) ->
     if typecheck_exp c e1 = TInt &&
        lookup_local_option id c = None &&
-       (let t' = typecheck_exp c e2 in
+       (let new_c = add_local c id TInt in
+        let t' = typecheck_exp new_c e2 in
         subtype c t' t)
     then TRef (RArray t)
     else type_error e "typecheck_exp: NewArrInit"
@@ -222,21 +222,20 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | Index (e', i) ->
     if typecheck_exp c i = TInt
     then let ty = typecheck_exp c e' in
-      begin match ty with
-        | TInt | TBool -> ty
-        | TRef (RArray ty') | TNullRef (RArray ty') -> ty'
+      begin match ty with 
+        | TRef (RArray ty') -> ty'
         | _ -> type_error e' ("typecheck_exp: Index lhs is type " ^ ml_string_of_ty ty)
       end 
     else type_error i "typecheck_exp: Index i not of type TInt"
                        
   | Length e' ->
-    (* todo: unsure *)
-    let _ = typecheck_exp c e' in
-    TInt
+    begin match typecheck_exp c e' with
+      | TRef (RArray _) -> TInt
+      | _ -> type_error e' "typecheck_exp: Length exp not a def not null array"
+    end
     
   | CStruct (struct_id, fid_exp_ls) -> begin match lookup_struct_option struct_id c with
       | Some fs ->
-        (* todo: probably got a better way to check for dups / not enough fields *)
         if List.length fs = List.length fid_exp_ls
         then begin
         let rec check_fields ls =
@@ -257,10 +256,12 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
         else type_error e "type_error: CStruct too many fields"
       | None -> type_error e "typecheck_exp: Struct type not in ctxt"
     end
-  (* todo (?): Alternatiive implementation w/List.sort compare ls *)
       
   | Proj (e', fid) -> begin match typecheck_exp c e' with
-      | TRef (RStruct struct_id) -> begin match lookup_field_option struct_id fid c with
+      | TRef (RStruct struct_id)
+      (* edited to pass mark's test; hmm I guess this works?? idk maybe a lil sus*)
+      | TNullRef (RStruct struct_id) ->
+        begin match lookup_field_option struct_id fid c with
           | Some t -> t
           | None -> type_error e' ("typecheck_exp: Proj exp.x " ^
                                    fid ^ " not in struct " ^ struct_id)
@@ -309,7 +310,7 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     
   | Uop (unop, e') ->
     let (_, t) = typ_of_unop unop in
-    if typecheck_exp c e' = t (* todo: unsure *)
+    if typecheck_exp c e' = t
     then t
     else type_error e' "typecheck_exp: Unop wrong expression type"
     
@@ -377,9 +378,25 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     (* hmm, actually this maybe doesn't make sense? *)
     let () = begin match e2.elt with
       | NewArrInit _ -> ()
-      | _ -> 
-        if is_nullable_ty t1 && to_ret != RetVoid
-        then type_error e1 "typecheck_exp: Assn e1 is null";
+      | _ -> begin match e1.elt with
+          | Proj _ -> ()
+                      (*
+          | Id id -> begin match lookup_option id tc with
+              | Some t1' ->
+                if is_nullable_ty t1' && to_ret != RetVoid
+                then type_error e1 ("typecheck_exp: Assn e1 " ^ string_of_exp e1 ^ " is null"
+                                    ^ " and to_ret is " ^ ml_string_of_ret_ty to_ret ^ " (Id)");
+              | _ -> type_error e1 ("typecheck_exp: Assn e1 id " ^ id ^ " not in ctxt")
+            end
+*)
+          | _ -> begin match t1 with
+              | TNullRef (RStruct _) -> ()
+              | _ ->
+                if is_nullable_ty t1 && to_ret != RetVoid
+                then type_error e1 ("typecheck_exp: Assn e1 " ^ string_of_exp e1 ^ " is null"
+                                    ^ " and to_ret is " ^ ml_string_of_ret_ty to_ret);
+            end
+        end
     end in 
     if subtype tc t2 t1
     then (tc, false)
@@ -399,7 +416,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
         then (tc, true)
         else type_error e ("typecheck_stmt: Ret exp " ^ ml_string_of_ty t' ^
                            " not subtype of to_ret " ^ ml_string_of_ty t)
-      | None -> (tc, true)
+      | None -> begin match to_ret with
+          | RetVoid -> (tc, true)
+          | _ -> (tc, false)
+        end
     end
 
   | SCall (e, ls) ->
@@ -457,15 +477,20 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     begin match e_op with
       | Some e ->
         if typecheck_exp new_tc e = TBool
-        then (let blk_tc, _ = typecheck_block new_tc ls to_ret in
-              let _, b = begin match stmt_op with
-                | Some stmt -> typecheck_stmt blk_tc stmt to_ret
+        then (let _, b = begin match stmt_op with
+                | Some stmt -> typecheck_stmt new_tc stmt to_ret
                 | None -> type_error s "typecheck_stmt: For case no stmt"
               end in (if not b
                       then (tc, false)
                       else type_error s "typecheck_stmt: For stmt returns"))
-        else type_error s "typecheck_stmt: For"
-      | None -> type_error s "typecheck_stmt: For"
+        else type_error s "typecheck_stmt: For condition not of type TBool"
+      | None -> (* todo: noel's test  type_error s "typecheck_stmt: For condition missing"*)
+        let _, b = begin match stmt_op with
+          | Some stmt -> typecheck_stmt new_tc stmt to_ret
+          | None -> type_error s "typecheck_stmt: For case no iterative stmt"
+        end in (if not b
+                then (tc, false)
+                else type_error s "typecheck_stmt: For iterative stmt returns")
   end
 
   | While (e, ls) ->

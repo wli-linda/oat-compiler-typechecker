@@ -1,3 +1,4 @@
+
 open Ll
 open Llutil
 open Ast
@@ -200,7 +201,7 @@ let oat_alloc_struct ct (id:Ast.id) : Ll.ty * operand * stream =
   let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
   let struct_ty = Ptr I64 in
   let fs = TypeCtxt.lookup id ct in
-  let size = Const (Int64.of_int @@ List.length fs) in
+  let size = Const (Int64.mul 8L @@ Int64.of_int @@ List.length fs) in
   ans_ty, Id ans_id, lift
     [ struct_id, Call(struct_ty, Gid "oat_malloc", [I64, size])
     ; ans_id, Bitcast(struct_ty, Id struct_id, ans_ty) ]
@@ -328,7 +329,7 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
     arr_ty, arr_op, size_code >@ alloc_code
 
-  (* todo: ARRAY TASK: Modify the compilation of the NewArrInit construct to implement the 
+  (* ARRAY TASK: Modify the compilation of the NewArrInit construct to implement the 
      initializer:
          - the initializer is a loop that uses id as the index
          - each iteration of the loop the code evaluates e2 and assigns it
@@ -341,31 +342,24 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
   | Ast.NewArrInit (elt_ty, e1, id, e2) ->    
     let _, size_op, size_code = cmp_exp tc c e1 in
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
+    (* getting exp node for the array that's a double pointer *)
     let arr_id = gensym "newarrinit" in
     let dbl_ptr = [I (arr_id, Alloca arr_ty)] >::
-                  I (gensym "store", Store (arr_ty, arr_op, Id arr_id)) (*
-                  [I (arr_id, Bitcast(arr_ty , arr_op, Ptr arr_ty))] *) in 
+                  I (gensym "store", Store (arr_ty, arr_op, Id arr_id)) in 
     let new_c = Ctxt.add c arr_id (Ptr arr_ty, Id arr_id) in
     let arr_exp = no_loc @@ Id arr_id in
-    
-    let vdecls = [id, no_loc @@ CInt 0L] in
+
+    (* components of the for loop *)
+    let vdecls = [id, no_loc @@ CInt 0L] in (* e.g. var i = 0 *)
     let e_id = no_loc (Id id) in
-    let guard = Some (no_loc @@ Bop (Lt, e_id, e1)) in
-    let iter = no_loc @@ Bop (Add, e_id, no_loc (CInt 1L)) in
+    let guard = Some (no_loc @@ Bop (Lt, e_id, e1)) in (* i < arr_len *)
+    let iter = no_loc @@ Bop (Add, e_id, no_loc (CInt 1L)) in (* i++ *)
     let after = Some (no_loc @@ Assn (e_id, iter)) in
     let index = no_loc @@ Index (arr_exp, e_id) in
-    let body = [no_loc @@ Assn (index, e2)] in
+    let body = [no_loc @@ Assn (index, e2)] in (* arr[i] = e2 value *)
     let _, for_code = cmp_stmt tc new_c arr_ty (no_loc @@ For (vdecls, guard, after, body)) in
-
     arr_ty, arr_op, size_code >@ alloc_code >@ dbl_ptr >@ for_code
-  (* very wrong impl, probably:
-    let _, idx_op, index_code = cmp_exp tc c (no_loc @@ Id id) in
-    let path_id = gensym "newarrid" in
-    let new_c = Ctxt.add c path_id (arr_ty, Id path_id) in
-    let _, assn_code = cmp_stmt tc new_c (cmp_ty tc elt_ty)
-        (no_loc @@ Assn (no_loc (Id path_id), e2)) in
-    arr_ty, arr_op, size_code >@ alloc_code >@ index_code >@ lift
-                      [path_id, Gep(arr_ty, arr_op, [Const 0L; Const 1L; idx_op])] >@ assn_code *)
+                    
 
    (* STRUCT TASK: complete this code that compiles struct expressions.
       For each field component of the struct
@@ -420,22 +414,18 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
     cmp_ty tc t, Id op, code >@ [I (op, Gep (ty, struct_op, [Const 0L; Const ind]))]
                                 
 
-  (* todo: ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
+  (* ARRAY TASK: Modify this index code to call 'oat_assert_array_length' before doing the 
      GEP calculation. This should be very straightforward, except that you'll need to use a Bitcast.
      You might want to take a look at the implementation of 'oat_assert_array_length'
      in runtime.c.   (That check is where the infamous "ArrayIndexOutOfBounds" exception would 
      be thrown...)
   *)
   | Ast.Index (e, i) ->
-    let arr_ty, arr_op, arr_code = (*begin match e.elt with
-      | Id _ -> cmp_exp_lhs tc c e
-                                     | _ -> *) cmp_exp tc c e
-    (*end*) in
-    (*let _, len_op, len_code = cmp_exp tc c (no_loc (Length e)) in*)
+    let arr_ty, arr_op, arr_code = cmp_exp tc c e in
     let _, ind_op, ind_code = cmp_exp tc c i in
     let ans_ty = match arr_ty with 
       | Ptr (Struct [_; Array (_, t)]) -> t 
-      | _ -> failwith @@ "Index: indexed into non pointer" ^ string_of_ty arr_ty in
+      | _ -> failwith @@ "Index: indexed into non pointer" in
     let ptr_id, tmp_id, call_id = gensym "index_ptr", gensym "tmp", gensym "call" in
     ans_ty, (Id ptr_id),
     arr_code >@ ind_code >@ lift
@@ -566,7 +556,7 @@ and cmp_block (tc : TypeCtxt.t) (c:Ctxt.t) (rt:Ll.ty) (stmts:Ast.block) : Ctxt.t
   List.fold_left (fun (c, code) s -> 
       let c, stmt_code = cmp_stmt tc c rt s in
       c, code >@ stmt_code
-    ) (c,[]) stmts
+    ) (c, []) stmts
 
 
 
