@@ -1,0 +1,57 @@
+struct Tuple {
+    int[] arr;
+    int arr_len
+}
+
+Tuple productExceptSelf(int[] nums) {
+
+    var nums_len = length(nums);
+    var prefix_arr = new int[nums_len] {i -> 1};
+    var suffix_arr = new int[nums_len] {i -> 1};
+    var res_arr = new int[nums_len] {i -> 1};
+
+    for (var i = 1; i < nums_len; i = i + 1;) {
+        var j = nums_len - i - 1;
+	prefix_arr[i] = prefix_arr[i-1] * nums[i-1];
+	suffix_arr[j] = suffix_arr[j+1] * nums[j+1];
+    }
+
+    for (var k = 0; k < nums_len; k = k + 1;) {
+    	res_arr[k] = prefix_arr[k] * suffix_arr[k];
+    }
+
+    var tuple = new Tuple { arr = res_arr; arr_len = nums_len };
+    return tuple;
+}
+
+void printArray(Tuple res) {
+
+    print_string("[");
+    
+    for (var i = 0; i < res.arr_len; i = i + 1;) {
+    	if (i == res.arr_len - 1) {
+	   print_int(res.arr[i]);
+	} else {
+	   print_int(res.arr[i]);
+	   print_string(",");
+	}
+    }
+    
+    print_string("]");
+    return;
+}
+
+int program(int argc, string[] argv) {
+
+    var arr1 = new int[] {-1,1,0,-3,3};
+    var arr2 = new int[] {1,2,3,4};
+
+    var res1 = productExceptSelf(arr1);    
+    printArray(res1);
+    print_string("\n");
+    var res2 = productExceptSelf(arr2);
+    printArray(res2);
+    print_string(" ");
+
+    return 0;
+}

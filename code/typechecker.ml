@@ -375,20 +375,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     let t1 = typecheck_exp tc e1 in
     let t2 = typecheck_exp tc e2 in
     (* todo: maybe handling better now...? still not 100% sure *)
-    (* hmm, actually this maybe doesn't make sense? *)
     let () = begin match e2.elt with
       | NewArrInit _ -> ()
       | _ -> begin match e1.elt with
           | Proj _ -> ()
-                      (*
-          | Id id -> begin match lookup_option id tc with
-              | Some t1' ->
-                if is_nullable_ty t1' && to_ret != RetVoid
-                then type_error e1 ("typecheck_exp: Assn e1 " ^ string_of_exp e1 ^ " is null"
-                                    ^ " and to_ret is " ^ ml_string_of_ret_ty to_ret ^ " (Id)");
-              | _ -> type_error e1 ("typecheck_exp: Assn e1 id " ^ id ^ " not in ctxt")
-            end
-*)
           | _ -> begin match t1 with
               | TNullRef (RStruct _) -> ()
               | _ ->
@@ -452,7 +442,6 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     else type_error e "typecheck_stmt: If conditional exp not of type TBool"
 
   | Cast (rty, id, e, ls1, ls2) ->
-    (* todo: unsure; TYP_IFQ? *)
     let ty = TRef rty in
     let ty' = begin match typecheck_exp tc e with
       | TNullRef rt' -> TRef rt'
@@ -474,24 +463,27 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
         get_vdecls tl new_c
     in
     let new_tc = get_vdecls vdecls tc in
+    (* honestly idk what to do with none cases, brain ded *)
     begin match e_op with
       | Some e ->
         if typecheck_exp new_tc e = TBool
         then (let _, b = begin match stmt_op with
                 | Some stmt -> typecheck_stmt new_tc stmt to_ret
-                | None -> type_error s "typecheck_stmt: For case no stmt"
+                | None -> (tc, false)
+                (* type_error s "typecheck_stmt: For case no iterative stmt" *)
               end in (if not b
                       then (tc, false)
                       else type_error s "typecheck_stmt: For stmt returns"))
         else type_error s "typecheck_stmt: For condition not of type TBool"
-      | None -> (* todo: noel's test  type_error s "typecheck_stmt: For condition missing"*)
+      | None -> (* noel's test: type_error s "typecheck_stmt: For condition missing"*)
         let _, b = begin match stmt_op with
           | Some stmt -> typecheck_stmt new_tc stmt to_ret
-          | None -> type_error s "typecheck_stmt: For case no iterative stmt"
+          | None -> (tc, false)
+                (* type_error s "typecheck_stmt: For case no iterative stmt" *)
         end in (if not b
                 then (tc, false)
                 else type_error s "typecheck_stmt: For iterative stmt returns")
-  end
+    end
 
   | While (e, ls) ->
     if typecheck_exp tc e = TBool

@@ -1,0 +1,27 @@
+struct Node {
+    int val;
+    Node? next
+}
+
+Node? reverseList(Node? head) {
+    var prev = Node null;
+    while (head != Node null) {
+        var curr = head;
+	head = head.next;
+	curr.next = prev;
+	prev = curr;
+    }
+    return prev;
+}
+
+int program(int argc, string[] argv) {
+
+    var node5 = new Node { val = 5; next = Node null };
+    var node4 = new Node { val = 4; next = node5 };
+    var node3 = new Node { val = 3; next = node4 };
+    var node2 = new Node { val = 2; next = node3 };
+    var node1 = new Node { val = 1; next = node2 };
+
+    print_string("The value of the first node of the reversed list is: ");
+    return reverseList(node1).val;
+}
